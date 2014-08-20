@@ -1,101 +1,192 @@
 #!/usr/bin/env python
 from __future__ import print_function
 
-import json
 import sys
-from collections import namedtuple
+import json
 
-NULL = None
+next_id = 1
 
-class YinObj(namedtuple('YinObj', ['place', 'parent', 'ctxt', 'data'])):
+def new_id():
+    global next_id
+    out, next_id = next_id, next_id + 1
+    return out
 
-    def send(self, wrld, msg, tgt):
-        pass
+class Object(object):
+    pass
 
-    def run(self, wrld, tgt):
-        pass
+class Atom(Object):
 
-    def gen(self, wrld, **kwargs):
-        new_place = wrld.place()
-        return new_place, self._replace(**kwargs)
+    def __init__(self, inner):
+        self.inner = inner
 
-class DoBlock(YinObj):
+    def __repr__(self):
+        return '{0}({1})'.format(self.__class__.__name__, repr(self.inner))
 
-    def send(self, wrld, msg, tgt):
-        nmsg_tgt, nmsg = msg.gen(parent=self.parent)
-        nmsg.run(wrld, nmsg_tgt)
-        wrld.write(tgt, self._replace(parent=nmsg_tgt))
+    def evaluate(self):
+        return self
+
+    def __hash__(self):
+        return hash(self.inner)
+
+    def __eq__(self, other):
+        if isinstance(other, Atom):
+            return self.inner == other.inner
+
+class YinException(Exception):
+    pass
 
 class World(object):
 
-    class Place(namedtuple('Place', ['wrld', 'loc'])):
-        pass
-
     def __init__(self):
-        self.objs = {}
-        self.last_loc = 0
+        self._map = {}
+        self._new_ids = []
 
-    def write(self, k, v):
-        self.objs[k] = v
+    def __setitem__(self, ID, val):
+        if ID in self._map:
+            raise YinException("ID {0} already defined to be {1}".format(ID,
+                self._map[ID]))
+        self._new_ids.append(ID)
+        self._map[ID] = val
 
-    def _read(self, loc):
-        return self.objs[loc]
+    def __getitem__(self, ID):
+        return self._map[ID]
 
-    def place(self):
-        loc, self.last_loc = self.last_loc, self.last_loc + 1
-        return Place(wrld=self, loc=loc)
+    def __contains__(self, ID):
+        return ID in self._map
+
+    def items(self):
+        return list(self._map.items())
+
+    def pop_new_ids(self):
+        ids, self._new_ids = self._new_ids, []
+        return ids
+
+    def __repr__(self):
+        return '<World {0} {1}>'.format(repr(self._map), repr(self._new_ids))
 
 
-class Context(object):
+class Root(Object):
 
-    def __init__(self):
-        self.reads = []
-        self.sends = []
-        self.makes = []
-        self.diffs = []
+    def send(self, msg):
+        if isinstance(msg, AlienFunction):
+            msg.execute()
 
-    def new_read(self, tgt, src, wrld, ctxt):
-        self.reads.append(Read(tgt, src, wrld, ctxt))
 
-    def new_send(self, val, tgt, src, wrld, ctxt):
-        self.sends.append(Send(val, tgt, src, wrld, ctxt))
+class Alien(Atom):
+    pass
 
-    def new_diff(self, val, tgt, src, wrld, ctxt):
-        self.diffs.append(Diff(val, tgt, src, wrld, ctxt))
 
-    def new_make(self, val, tgt, src, wrld, ctxt):
-        self.makes.append(Make(val, tgt, src, wrld, ctxt))
+class Symbol(Atom):
+    pass
 
-    def new_eval(self, val, tgt, wrld, ctxt):
-        self.evals.append(Make(val, tgt, wrld, ctxt))
 
-    def inject(self, data, wrld=0, ctxt=0):
-        for field, val in data.items():
-            if field[0] != '.':
-                raise NotImplemented
-            ID = self.new_id()
-            # TODO(kzentner): Change this to sends
-            self.wrlds[wrld].get(ctxt).set(field, ID)
-            self.new_eval(val=val, tgt=ID, wrld=wrld, ctxt=ctxt)
+class Int(Atom):
+    pass
 
-    def get_wrld(self, ID):
-        return self.wrlds[ID]
 
-def wrap(op, wrld, ctxt):
-    if isinstance(op, list):
-        # message send
-        pass
+class AlienFunction(Alien):
+
+    def send(self, msg):
+        return AlienFunction((self.inner[0], tuple(self.inner[1] + [msg])))
+
+    def execute(self):
+        #print('executing', self)
+        self.inner[0](*self.inner[1])
+
+
+class Map(object):
+
+    def __init__(self, mapping, nxt):
+        self._next = nxt
+        self._map = mapping
+
+    def send(self, msg):
+        v = msg.evaluate()
+        try:
+            return self._map[v]
+        except KeyError:
+            return self._next.send(v)
+
+    def __repr__(self):
+        return 'Map({0}, {1})'.format(repr(self._map), repr(self._next))
+
+
+class Event(Object):
+    pass
+
+
+class Send(Event):
+
+    def __init__(self, target, msg, dest):
+        self.target = target
+        self.msg = msg
+        self.dest = dest
+
+    def __repr__(self):
+        return 'Send(target={0}, msg={1}, dest={2})'.format(repr(self.target),
+                repr(self.msg),
+                repr(self.dest))
+
+
+class Make(Event):
+
+    def __init__(self, target, send):
+        self.target = target
+        self.send = send
+
+    def __repr__(self):
+        return 'Make(target={0}, send={1})'.format(repr(self.target),
+                repr(self.send))
+
+
+class Change(Event):
+
+    def __init__(self, target, source):
+        self.target = target
+        self.source = source
+
+    def __repr__(self):
+        return 'Change(target={0}, source={1})'.format(repr(self.target),
+                repr(self.source))
+
+
+def add_obj(wrld, obj):
+    ID = new_id()
+    wrld[ID] = obj
+    return ID
+
+
+def do_send(world, s_i):
+    send = world[s_i]
+    if send.target not in world or send.msg not in world:
+        for i, s in world.items():
+            if isinstance(s, Send) and (s.dest == send.target or s.dest ==
+                    send.msg):
+                do_send(world, i)
+    #print(world[send.target])
+    world[send.dest] = world[send.target].send(world[send.msg])
+
 
 def main():
     with open(sys.argv[1]) as f:
         program = json.load(f)
-    print(program)
-    ctxt = Context()
-    wrld = World()
-    place = wrld.place()
-    do = DoBlock(place=place, parent=None, ctxt=ctxt, data=None)
-    for op in program:
-        do.send(wrld, wrap(op, wrld, ctxt), place)
+    world = World()
+    root = Root()
+    ground = Map({Symbol('print'): AlienFunction((print, []))}, root)
+    ground_id = add_obj(world, ground)
+
+    inter = new_id()
+    s3_id = add_obj(world, Send(ground_id, inter, 0))
+
+    target = new_id()
+    msg = new_id()
+    s_id = add_obj(world, Send(target, msg, inter))
+    p_id = add_obj(world, Symbol('print'))
+    s2_id = add_obj(world, Send(ground_id, p_id, target))
+    world[msg] = Int(1)
+    #print(world)
+    #do_send(world, s_id)
+    do_send(world, s3_id)
 
 if __name__ == '__main__':
     main()
@@ -151,25 +242,52 @@ if __name__ == '__main__':
 # structure, including the lexical path.
 
 # Attempt 1:
-# data World = Map ID Object
-# data Object = Composite | Event | Atom
+# data World = 'Map(ID, Object)
+# data Object = Map | Event | Atom | TypeMap
 # data Atom = Symbol | Int | Alien
-# data Symbol = String -- (in the underlying language)
-# data Int = int -- (in the underlying language)
+# data Symbol = 'String
+# data Int = 'Int
+# data ID = 'Int
 # data Event = Send | Make | Change
-# data Send = { target :: ID; msg :: ID; dest :: ID; ctxt :: ID; }
-# data Make = { target :: ID; send :: ID; ctxt :: ID; }
-# data Change = { target :: ID; source :: ID; ctxt :: ID; }
-# data Composite = { lazy :: ID; strict :: ID; byValue :: Map Object ID;
-# byType :: Map Object ID; int :: ID; alien :: ID; symbol :: ID; id :: ID; }
-# The type of byValue implies that it is not possible to apply a Change to the
-# key of a Composite. This is an acceptable limitation, since the Composite
-# itself should probably be changed instead.
-# Originally, this design used SortedMaps instead of Maps, and defined a whole
-# bunch of arbitrary orderings. After some thought, this is not needed in the
-# core.
-# Composites, Events, and Atoms
-# have arbitrary orderings w.r.t. each other. Within Events, there is a stable
-# (w.r.t. value) (but arbitrary) ordering. Each type of Atom has a consistent
-# ordering within itself. Int's are ordered by value. Alien's are ordered by
-# an override field. Symbol's are ordered arbitrarily.
+# data Send = { target : ID; msg : ID; dest : ID; }
+# data Make = { target : ID; send : ID; }
+# data Change = { target : ID; source : ID; }
+# data Map = { 'Map(Object, ID); next : ID }
+# data TypeMap = { int : ID; alien : ID; symbol : ID; next : ID }
+
+# Steps to process [["print", 1]]
+# Construct world, root, ground
+# Visit ["print", 1]
+# Begin constructing send
+#   New ID for target
+#   target = new_id()
+#   msg = new_id()
+#   s_id = add_obj(world, Send{target=target, dest=ground.ID, msg=msg})
+#   Construct target of send.
+#     Begin constructing send.
+#     Create Symbol
+#     p_id = add_obj(world, Symbol("print"))
+#     Send{target=ground.ID, dest=target, msg=p_id}
+#   Done constructing target of send.
+#   Construct msg of send.
+#     add_obj(world, Int(1), msg)
+#   Done constructing msg of send.
+# Done constructing send.
+# Root expression fully constructed, evaluate.
+#   Check s_id is evaluatable. No, target does not exist.
+#   Evaluate Send where send.dest == world.get(s_id).target.
+#     Target of send is a Map, so evaluate the msg.
+#     msg is an Atom, and thus already evaluated.
+#     Lookup Symbol("print") in the 'Map.
+#     store result of lookup into send.dest
+#   Done evaluating inner Send.
+#   Check if send world[s_id] is evaluatable. Target exists, so perform the send.
+#   Target is a Alien. Call the underlying send method, which returns another
+#   Alien (an "action"). Send that Alien to the dest (ground).
+#   Call the underlying ground is a Map, so evaluate the msg. 
+#   The msg is an alien, call it's eval method.
+#   Take the result of calling the eval method, and attempt to match it with
+#   ground.
+#   No match, so proceed to ground.next -> root.
+#   Call root.send with alien. Root performs actual printing.
+# Evaluating complete.
