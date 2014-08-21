@@ -42,6 +42,8 @@ class World(object):
         self._new_ids = []
 
     def __setitem__(self, ID, val):
+        if ID == 0:
+            return
         if ID in self._map:
             raise YinException("ID {0} already defined to be {1}".format(ID,
                 self._map[ID]))
@@ -90,7 +92,6 @@ class AlienFunction(Alien):
         return AlienFunction((self.inner[0], tuple(self.inner[1] + [msg])))
 
     def execute(self):
-        #print('executing', self)
         self.inner[0](*self.inner[1])
 
 
@@ -158,13 +159,48 @@ def add_obj(wrld, obj):
 
 def do_send(world, s_i):
     send = world[s_i]
-    if send.target not in world or send.msg not in world:
-        for i, s in world.items():
-            if isinstance(s, Send) and (s.dest == send.target or s.dest ==
-                    send.msg):
-                do_send(world, i)
-    #print(world[send.target])
+    for i, s in world.items():
+        if send.target not in world or send.msg not in world:
+            if isinstance(s, Send):
+                if s.dest == send.target and send.target not in world:
+                    do_send(world, i)
+                elif s.dest == send.msg and send.msg not in world:
+                    do_send(world, i)
     world[send.dest] = world[send.target].send(world[send.msg])
+
+
+def yin_print(*objects):
+    for i, o in enumerate(objects):
+        if isinstance(o, Atom):
+            print(o.inner, end='')
+        else:
+            print(o, end='')
+        if i + 1 == len(objects):
+            print('\n', end='')
+        else:
+            print(' ', end='')
+
+
+def parse(world, expr, dest, ctxt):
+    if isinstance(expr, list):
+        if len(expr) == 2:
+            target = new_id()
+            msg = new_id()
+            add_obj(world, Send(target, msg, dest))
+            parse(world, expr[0], target, ctxt)
+            parse(world, expr[1], msg, ctxt)
+        elif len(expr) > 2:
+            raise NotImplemented
+        else:
+            raise YinException("Message send without message.")
+    elif isinstance(expr, str) or isinstance(expr, unicode):
+        expr = str(expr)
+        if expr.startswith('.'):
+            world[dest] = Symbol(expr[1:])
+        else:
+            add_obj(world, Send(ctxt, add_obj(world, Symbol(expr)), dest))
+    elif isinstance(expr, int):
+        world[dest] = Int(expr)
 
 
 def main():
@@ -172,21 +208,15 @@ def main():
         program = json.load(f)
     world = World()
     root = Root()
-    ground = Map({Symbol('print'): AlienFunction((print, []))}, root)
+    ground = Map({Symbol('print'): AlienFunction((yin_print, []))}, root)
     ground_id = add_obj(world, ground)
+    for line in program:
 
-    inter = new_id()
-    s3_id = add_obj(world, Send(ground_id, inter, 0))
+        inter = new_id()
+        to_ground_send = add_obj(world, Send(ground_id, inter, 0))
 
-    target = new_id()
-    msg = new_id()
-    s_id = add_obj(world, Send(target, msg, inter))
-    p_id = add_obj(world, Symbol('print'))
-    s2_id = add_obj(world, Send(ground_id, p_id, target))
-    world[msg] = Int(1)
-    #print(world)
-    #do_send(world, s_id)
-    do_send(world, s3_id)
+        parse(world, line, inter, ground_id)
+        do_send(world, to_ground_send)
 
 if __name__ == '__main__':
     main()
