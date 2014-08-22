@@ -83,13 +83,40 @@ class Symbol(Atom):
 
 
 class Int(Atom):
-    pass
 
+    def send(self, msg):
+        if isinstance(msg, Symbol):
+            return IntOp(self.inner, msg)
+
+
+class IntOp(Object):
+
+    func_map = {
+        Symbol('+'): lambda a, b: a + b,
+        Symbol('*'): lambda a, b: a * b,
+        Symbol('//'): lambda a, b: a // b,
+        Symbol('-'): lambda a, b: a - b
+    }
+
+    def __init__(self, val, op):
+        self.op = op
+        self.val = val
+        try:
+            self.func = self.func_map[op]
+        except KeyError:
+            raise YinException('Unknown Int operator: {0}'.format(op))
+
+    def send(self, msg):
+        if isinstance(msg, Int):
+            return Int(self.func(self.val, msg.inner))
+        else:
+            raise YinException('TypeError: Evaluate {0} {1} {2}.'.format(
+                self.val, self.op, msg))
 
 class AlienFunction(Alien):
 
     def send(self, msg):
-        return AlienFunction((self.inner[0], tuple(self.inner[1] + [msg])))
+        return AlienFunction((self.inner[0], tuple(list(self.inner[1]) + [msg])))
 
     def execute(self):
         self.inner[0](*self.inner[1])
@@ -183,16 +210,23 @@ def yin_print(*objects):
 
 def parse(world, expr, dest, ctxt):
     if isinstance(expr, list):
-        if len(expr) == 2:
-            target = new_id()
-            msg = new_id()
-            add_obj(world, Send(target, msg, dest))
-            parse(world, expr[0], target, ctxt)
-            parse(world, expr[1], msg, ctxt)
-        elif len(expr) > 2:
-            raise NotImplemented
-        else:
+        if len(expr) < 1:
+            raise YinException("Message send without target.")
+        if len(expr) < 2:
             raise YinException("Message send without message.")
+        target = new_id()
+        for i, e in enumerate(expr):
+            if i == 0:
+                parse(world, e, target, ctxt)
+                continue
+            msg = new_id()
+            parse(world, e, msg, ctxt)
+            if i + 1 == len(expr):
+                add_obj(world, Send(target, msg, dest))
+            else:
+                next_target = new_id()
+                add_obj(world, Send(target, msg, next_target))
+                target = next_target
     elif isinstance(expr, str) or isinstance(expr, unicode):
         expr = str(expr)
         if expr.startswith('.'):
